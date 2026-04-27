@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SecondHand Sathi - Multi Screen Prototype</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Sora:wght@400;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="bg-shape one"></div>
+    <div class="bg-shape two"></div>
+
+    <main class="phone-shell">
+      <header class="topbar">
+        <button id="backBtn" class="icon-btn" type="button" aria-label="Back">&larr;</button>
+        <div>
+          <p class="eyebrow">SecondHand Sathi</p>
+          <p id="topTitle" class="top-title">Intro</p>
+        </div>
+        <div id="stepPill" class="step-pill">1/6</div>
+      </header>
+
+      <section id="screen-intro" class="screen active">
+        <h1>Buy Better Used Cars in India</h1>
+        <p class="muted">
+          This assistant guides you through RC details, photo checks, structural damage screening, and engine sound analysis.
+        </p>
+        <div class="quick-tags">
+          <span>RC + VAHAN</span>
+          <span>Photo Inspection</span>
+          <span>Pillar + Chassis Check</span>
+          <span>Noise AI</span>
+        </div>
+        <div class="hero-card">
+          <p>Estimated Time</p>
+          <h2>8-10 min</h2>
+          <small>Best done in daylight and quiet area</small>
+        </div>
+        <button data-next="details" class="primary-btn" type="button">Start Inspection</button>
+      </section>
+
+      <section id="screen-details" class="screen">
+        <h2>Fill Car Details</h2>
+        <p class="muted">Enter basics to personalize checks and market price range.</p>
+        <label class="field">
+          <span>Car Name</span>
+          <input id="carName" type="text" placeholder="e.g. Hyundai i20 Sportz" />
+        </label>
+        <label class="field">
+          <span>Registration Number</span>
+          <input id="regNo" type="text" placeholder="e.g. AS01AB1234" />
+        </label>
+        <label class="field">
+          <span>Asking Price (INR)</span>
+          <input id="askingPrice" type="number" placeholder="e.g. 520000" />
+        </label>
+        <label class="field">
+          <span>Odometer (km)</span>
+          <input id="odometer" type="number" placeholder="e.g. 64000" />
+        </label>
+        <button data-next="photos" class="primary-btn" type="button">Save & Continue</button>
+      </section>
+
+      <section id="screen-photos" class="screen">
+        <h2>Capture Car Photos</h2>
+        <p class="muted">Tap each tile to simulate photo capture.</p>
+        <div id="photoGrid" class="photo-grid">
+          <button class="photo-tile" data-photo="front" type="button">Front View</button>
+          <button class="photo-tile" data-photo="rear" type="button">Rear View</button>
+          <button class="photo-tile" data-photo="left" type="button">Left Side</button>
+          <button class="photo-tile" data-photo="right" type="button">Right Side</button>
+          <button class="photo-tile" data-photo="engine" type="button">Engine Bay</button>
+          <button class="photo-tile" data-photo="tyres" type="button">Tyres Close-up</button>
+        </div>
+        <p id="photoStatus" class="status-line">0 / 6 photos captured</p>
+        <button data-next="structural" class="primary-btn" type="button">Continue to Structural Check</button>
+      </section>
+
+      <section id="screen-structural" class="screen">
+        <h2>Structural Damage Check</h2>
+        <p class="muted">Review each point. Mark as reviewed and flag suspicious findings.</p>
+        <p id="structuralStatus" class="status-line">Reviewed 0/10 | Flagged 0</p>
+        <div class="structural-list" id="structuralList">
+          <article class="structural-item" data-item="A/B/C pillars" data-review="false" data-flag="false">
+            <h3>A/B/C Pillars</h3>
+            <p>Look for repaint mismatch, filler waves, seam sealer breaks, overspray near rubber beading.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Roof rails + edges" data-review="false" data-flag="false">
+            <h3>Roof Rails + Roof Edges</h3>
+            <p>Uneven roof channels or weld marks may indicate rollover repair.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Panel gaps" data-review="false" data-flag="false">
+            <h3>Door / Bonnet / Boot Gaps</h3>
+            <p>Mismatch in left-right panel gaps is a classic crash-repair signal.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Engine bay welds" data-review="false" data-flag="false">
+            <h3>Engine Bay Weld Points</h3>
+            <p>Factory welds are uniform; rough or non-matching welds suggest structural replacement.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Chassis apron towers" data-review="false" data-flag="false">
+            <h3>Chassis / Apron / Strut Towers</h3>
+            <p>Check for ripples, hammer marks, or fresh sealant and paint patches.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Boot floor" data-review="false" data-flag="false">
+            <h3>Boot Floor + Spare Wheel Well</h3>
+            <p>Wrinkles, cut-join marks, or non-factory seam sealer indicate rear impact repair.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Light date mismatch" data-review="false" data-flag="false">
+            <h3>Headlight / Tail-light Date Match</h3>
+            <p>One-side newer units often indicate side-specific collision replacement.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Glass date codes" data-review="false" data-flag="false">
+            <h3>All Glass Date Codes</h3>
+            <p>Windows with very different dates may suggest accident or heavy body repair history.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Bolt tampering" data-review="false" data-flag="false">
+            <h3>Bolt Tampering (Hinges/Fenders)</h3>
+            <p>Tool marks on bolts suggest panels were removed or replaced.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+          <article class="structural-item" data-item="Tyre wear alignment" data-review="false" data-flag="false">
+            <h3>Tyre Wear + Steering Alignment</h3>
+            <p>Uneven wear or steering pull may indicate chassis alignment issues after impact.</p>
+            <div class="struct-actions">
+              <button class="struct-btn review" data-action="review" type="button">Mark Reviewed</button>
+              <button class="struct-btn flag" data-action="flag" type="button">Flag Issue</button>
+            </div>
+          </article>
+        </div>
+        <button data-next="noise" class="primary-btn" type="button">Continue to Engine Noise</button>
+      </section>
+
+      <section id="screen-noise" class="screen">
+        <h2>Listen to Engine Noise</h2>
+        <p class="muted">Place phone 15-20 cm from hood and record idle + light rev.</p>
+        <div class="noise-card">
+          <div class="wave-wrap" id="waveWrap" aria-hidden="true">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+          <p id="noiseText">Ready to record</p>
+          <button id="recordBtn" class="secondary-btn" type="button">Start Recording</button>
+        </div>
+        <div id="noiseResult" class="risk-box hidden">
+          <p><strong>Noise Risk:</strong> Mild irregular tick at idle</p>
+          <small>Possible belt/pulley wear. Recommend mechanic confirmation.</small>
+        </div>
+        <button data-next="report" class="primary-btn" type="button">Generate Final Report</button>
+      </section>
+
+      <section id="screen-report" class="screen">
+        <h2>Final Inspection Report</h2>
+        <div class="report-card">
+          <p class="muted tiny">Vehicle</p>
+          <h3 id="reportCar">-</h3>
+          <p id="reportMeta" class="muted tiny">-</p>
+          <div class="score-row">
+            <div>
+              <p class="muted tiny">Health Score</p>
+              <p id="healthScore" class="score">74</p>
+            </div>
+            <div>
+              <p class="muted tiny">Decision</p>
+              <p id="decision" class="decision warn">NEGOTIATE</p>
+            </div>
+          </div>
+          <ul class="flat-list">
+            <li>RC details captured</li>
+            <li id="photoReport">Photos captured: 0 / 6</li>
+            <li id="structuralReport">Structural reviewed: 0 / 10</li>
+            <li id="flaggedReport">Structural issues flagged: 0</li>
+            <li id="noiseReport">Engine noise: Not analyzed</li>
+            <li id="negotiationReport">Recommended negotiation: Pending analysis</li>
+          </ul>
+        </div>
+        <button id="restartBtn" class="secondary-btn" type="button">Run New Inspection</button>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
