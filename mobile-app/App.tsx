@@ -1,6 +1,10 @@
 import { StatusBar } from 'expo-status-bar';
+import { Audio } from 'expo-av';
+import * as ImagePicker from 'expo-image-picker';
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
+  Image,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -11,469 +15,693 @@ import {
 } from 'react-native';
 
 import {
-  createInitialPhotoState,
+  analyzeAudio,
+  analyzePhotos,
+  generateFinalReport,
+  lookupVehicle,
+  type PhotoAssetInput,
+} from './src/api/client';
+import { API_BASE_URL } from './src/constants/config';
+import {
   createInitialStructuralState,
   PHOTO_CHECKPOINTS,
   STEPS,
   STRUCTURAL_CHECKPOINTS,
 } from './src/data/checkpoints';
-import { CarDetails, StepId } from './src/types';
+import { CarDetails } from './src/types';
 
-const QUICK_TAGS = ['RC + VAHAN', 'Photo Inspection', 'Pillar + Chassis Check', 'Engine Noise AI'];
-const WAVE_IDLE = [14, 22, 16, 20, 14];
+type NoiseState = 'idle' | 'recording' | 'recorded';
 
-type NoiseState = 'idle' | 'recording' | 'analyzed';
-type Decision = 'BUY' | 'NEGOTIATE' | 'AVOID';
+type CapturedPhoto = {
+  uri: string;
+  name: string;
+  type: string;
+  label: string;
+};
+
+type FinalReport = {
+  vehicle_summary?: {
+    registration?: string;
+    make_model?: string;
+    fuel_type?: string;
+    registration_status?: string;
+  };
+  overall_score?: number;
+  decision?: 'BUY' | 'NEGOTIATE' | 'AVOID';
+  confidence?: 'LOW' | 'MEDIUM' | 'HIGH';
+  red_flags?: string[];
+  inspection_findings?: Array<{
+    category?: string;
+    severity?: 'LOW' | 'MEDIUM' | 'HIGH';
+    evidence?: string;
+    recommendation?: string;
+  }>;
+  repair_estimates_inr?: Array<{
+    item?: string;
+    min?: number;
+    max?: number;
+  }>;
+  negotiation_strategy?: {
+    target_discount_min?: number;
+    target_discount_max?: number;
+    talking_points?: string[];
+  };
+  next_steps?: string[];
+};
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
 
-const formatInr = (value: string): string => {
-  if (!value.trim()) return 'Price not added';
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) return value;
-  return `Rs ${parsed.toLocaleString('en-IN')}`;
-};
+const createInitialPhotoState = (): Record<string, CapturedPhoto | null> =>
+  Object.fromEntries(PHOTO_CHECKPOINTS.map((item) => [item.id, null]));
 
 export default function App() {
   const [stepIndex, setStepIndex] = useState(0);
+
   const [details, setDetails] = useState<CarDetails>({
     carName: '',
     registrationNumber: '',
     askingPrice: '',
     odometer: '',
   });
-  const [photoState, setPhotoState] = useState<Record<string, boolean>>(createInitialPhotoState());
+
+  const [vehicleData, setVehicleData] = useState<Record<string, unknown> | null>(null);
+  const [vehicleLoading, setVehicleLoading] = useState(false);
+  const [vehicleError, setVehicleError] = useState<string | null>(null);
+
+  const [photos, setPhotos] = useState<Record<string, CapturedPhoto | null>>(createInitialPhotoState());
+  const [photoAnalyzeLoading, setPhotoAnalyzeLoading] = useState(false);
+  const [photoAnalysis, setPhotoAnalysis] = useState<Record<string, unknown> | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+
   const [structuralState, setStructuralState] = useState<Record<string, { reviewed: boolean; flagged: boolean }>>(
     createInitialStructuralState()
   );
+
   const [noiseState, setNoiseState] = useState<NoiseState>('idle');
-  const [waveHeights, setWaveHeights] = useState<number[]>(WAVE_IDLE);
+  const [recording, setRecording] = useState<Audio.Recording | null>(null);
+  const [audioClip, setAudioClip] = useState<{ uri: string; name: string; type: string } | null>(null);
+  const [audioAnalyzeLoading, setAudioAnalyzeLoading] = useState(false);
+  const [audioTranscript, setAudioTranscript] = useState('');
+  const [audioAnalysis, setAudioAnalysis] = useState<Record<string, unknown> | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
+
+  const [reportLoading, setReportLoading] = useState(false);
+  const [finalReport, setFinalReport] = useState<FinalReport | null>(null);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const currentStep = STEPS[stepIndex];
 
-  const photoCapturedCount = useMemo(
-    () => Object.values(photoState).filter(Boolean).length,
-    [photoState]
+  const capturedPhotoCount = useMemo(
+    () => Object.values(photos).filter((item) => item !== null).length,
+    [photos]
   );
 
   const structuralSummary = useMemo(() => {
     const reviewed = STRUCTURAL_CHECKPOINTS.filter((item) => structuralState[item.id]?.reviewed).length;
-    const flaggedItems = STRUCTURAL_CHECKPOINTS.filter((item) => structuralState[item.id]?.flagged);
+    const flagged = STRUCTURAL_CHECKPOINTS.filter((item) => structuralState[item.id]?.flagged).length;
 
     return {
       reviewed,
-      flaggedCount: flaggedItems.length,
-      flaggedTitles: flaggedItems.map((item) => item.title),
+      flagged,
     };
   }, [structuralState]);
 
-  const score = useMemo(() => {
-    const penalty = noiseState === 'analyzed' ? 8 : 0;
-    const value = 58 + photoCapturedCount * 4 + structuralSummary.reviewed * 2 - structuralSummary.flaggedCount * 6 - penalty;
-    return clamp(value, 20, 95);
-  }, [noiseState, photoCapturedCount, structuralSummary.flaggedCount, structuralSummary.reviewed]);
-
-  const decision = useMemo((): { label: Decision; message: string; color: string } => {
-    if (score >= 82 && structuralSummary.flaggedCount <= 1) {
-      return {
-        label: 'BUY',
-        message: 'Strong profile. Complete final mechanic PPI before payment.',
-        color: '#197d4d',
-      };
-    }
-
-    if (score >= 66 && structuralSummary.flaggedCount <= 3) {
-      return {
-        label: 'NEGOTIATE',
-        message: 'Good candidate with risks. Negotiate with documented repair estimates.',
-        color: '#9b6800',
-      };
-    }
-
-    return {
-      label: 'AVOID',
-      message: 'High structural risk. Only proceed with expert verification and deep discount.',
-      color: '#b53b2f',
-    };
-  }, [score, structuralSummary.flaggedCount]);
+  const fallbackScore = useMemo(() => {
+    const noisePenalty = audioAnalysis ? 8 : 0;
+    return clamp(58 + capturedPhotoCount * 4 + structuralSummary.reviewed * 2 - structuralSummary.flagged * 6 - noisePenalty, 20, 95);
+  }, [audioAnalysis, capturedPhotoCount, structuralSummary.flagged, structuralSummary.reviewed]);
 
   useEffect(() => {
-    if (noiseState !== 'recording') {
+    return () => {
+      if (recording) {
+        void recording.stopAndUnloadAsync();
+      }
+    };
+  }, [recording]);
+
+  const updateDetailField = (key: keyof CarDetails, value: string): void => {
+    setDetails((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleVehicleLookup = async (): Promise<void> => {
+    const reg = details.registrationNumber.trim();
+    if (!reg) {
+      Alert.alert('Registration required', 'Please enter the vehicle registration number first.');
       return;
     }
 
-    const waveTimer = setInterval(() => {
-      setWaveHeights(Array.from({ length: 5 }, () => Math.floor(Math.random() * 30) + 12));
-    }, 150);
+    setVehicleLoading(true);
+    setVehicleError(null);
 
-    const recordingTimer = setTimeout(() => {
-      setNoiseState('analyzed');
-      setWaveHeights([16, 30, 24, 28, 18]);
-    }, 2400);
+    try {
+      const response = await lookupVehicle(reg);
+      setVehicleData(response.data);
+    } catch (error) {
+      setVehicleError(error instanceof Error ? error.message : 'Vehicle lookup failed');
+    } finally {
+      setVehicleLoading(false);
+    }
+  };
 
-    return () => {
-      clearInterval(waveTimer);
-      clearTimeout(recordingTimer);
-    };
-  }, [noiseState]);
+  const capturePhoto = async (checkpointId: string): Promise<void> => {
+    setPhotoError(null);
 
-  const goToStep = (id: StepId): void => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (permission.status !== 'granted') {
+      Alert.alert('Camera access needed', 'Please allow camera permission to capture inspection photos.');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+      allowsEditing: false,
+    });
+
+    if (result.canceled) {
+      return;
+    }
+
+    const asset = result.assets[0];
+    if (!asset?.uri) {
+      return;
+    }
+
+    const checkpoint = PHOTO_CHECKPOINTS.find((item) => item.id === checkpointId);
+    const label = checkpoint?.label || checkpointId;
+
+    setPhotos((prev) => ({
+      ...prev,
+      [checkpointId]: {
+        uri: asset.uri,
+        name: asset.fileName || `${checkpointId}-${Date.now()}.jpg`,
+        type: asset.mimeType || 'image/jpeg',
+        label,
+      },
+    }));
+  };
+
+  const analyzeCapturedPhotos = async (): Promise<void> => {
+    const inputs: PhotoAssetInput[] = Object.values(photos)
+      .filter((item): item is CapturedPhoto => Boolean(item))
+      .map((item) => ({
+        uri: item.uri,
+        name: item.name,
+        type: item.type,
+        label: item.label,
+      }));
+
+    if (!inputs.length) {
+      Alert.alert('No photos', 'Capture at least one photo before AI validation.');
+      return;
+    }
+
+    setPhotoAnalyzeLoading(true);
+    setPhotoError(null);
+
+    try {
+      const result = await analyzePhotos(inputs);
+      setPhotoAnalysis(result.analysis ?? null);
+    } catch (error) {
+      setPhotoError(error instanceof Error ? error.message : 'Photo analysis failed');
+    } finally {
+      setPhotoAnalyzeLoading(false);
+    }
+  };
+
+  const toggleStructural = (id: string, field: 'reviewed' | 'flagged'): void => {
+    setStructuralState((prev) => {
+      const current = prev[id] || { reviewed: false, flagged: false };
+
+      return {
+        ...prev,
+        [id]: {
+          reviewed: field === 'reviewed' ? !current.reviewed : current.reviewed,
+          flagged: field === 'flagged' ? !current.flagged : current.flagged,
+        },
+      };
+    });
+  };
+
+  const startRecording = async (): Promise<void> => {
+    setAudioError(null);
+
+    const permission = await Audio.requestPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Microphone required', 'Please allow microphone access to record engine sound.');
+      return;
+    }
+
+    try {
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+      });
+
+      const newRecording = new Audio.Recording();
+      await newRecording.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      await newRecording.startAsync();
+
+      setRecording(newRecording);
+      setNoiseState('recording');
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : 'Unable to start recording');
+    }
+  };
+
+  const stopRecording = async (): Promise<void> => {
+    if (!recording) {
+      return;
+    }
+
+    try {
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+
+      setRecording(null);
+      setNoiseState('recorded');
+
+      if (uri) {
+        setAudioClip({
+          uri,
+          name: `engine-${Date.now()}.m4a`,
+          type: 'audio/m4a',
+        });
+      }
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : 'Unable to stop recording');
+      setRecording(null);
+      setNoiseState('idle');
+    }
+  };
+
+  const analyzeEngineAudio = async (): Promise<void> => {
+    if (!audioClip) {
+      Alert.alert('No recording', 'Record engine sound first.');
+      return;
+    }
+
+    setAudioAnalyzeLoading(true);
+    setAudioError(null);
+
+    try {
+      const result = await analyzeAudio(audioClip);
+      setAudioTranscript(result.transcript || '');
+      setAudioAnalysis(result.analysis ?? null);
+    } catch (error) {
+      setAudioError(error instanceof Error ? error.message : 'Audio analysis failed');
+    } finally {
+      setAudioAnalyzeLoading(false);
+    }
+  };
+
+  const generateAiReport = async (): Promise<void> => {
+    setReportLoading(true);
+    setReportError(null);
+
+    const structuralChecks = STRUCTURAL_CHECKPOINTS.map((item) => ({
+      title: item.title,
+      reviewed: structuralState[item.id]?.reviewed ?? false,
+      flagged: structuralState[item.id]?.flagged ?? false,
+    }));
+
+    try {
+      const response = await generateFinalReport({
+        details,
+        vehicleApiData: vehicleData ?? {},
+        photoAnalysis: photoAnalysis ?? {},
+        structuralChecks,
+        audioAnalysis: audioAnalysis ?? {},
+      });
+
+      setFinalReport((response.report || null) as FinalReport | null);
+    } catch (error) {
+      setReportError(error instanceof Error ? error.message : 'Report generation failed');
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  const restartInspection = (): void => {
+    setStepIndex(0);
+    setDetails({ carName: '', registrationNumber: '', askingPrice: '', odometer: '' });
+    setVehicleData(null);
+    setVehicleError(null);
+    setPhotos(createInitialPhotoState());
+    setPhotoAnalysis(null);
+    setPhotoError(null);
+    setStructuralState(createInitialStructuralState());
+    setNoiseState('idle');
+    setRecording(null);
+    setAudioClip(null);
+    setAudioTranscript('');
+    setAudioAnalysis(null);
+    setAudioError(null);
+    setFinalReport(null);
+    setReportError(null);
+  };
+
+  const goToStep = (id: (typeof STEPS)[number]['id']): void => {
     const index = STEPS.findIndex((step) => step.id === id);
     if (index >= 0) {
       setStepIndex(index);
     }
   };
 
-  const updateDetailField = (key: keyof CarDetails, value: string): void => {
-    setDetails((prev) => ({
-      ...prev,
-      [key]: value,
-    }));
-  };
+  const renderIntro = () => (
+    <View style={styles.contentWrap}>
+      <Text style={styles.headline}>Used Car AI Inspector</Text>
+      <Text style={styles.mutedText}>
+        Live mobile app with India vehicle lookup, real camera, real engine audio recording, and OpenAI-generated final report.
+      </Text>
 
-  const togglePhoto = (id: string): void => {
-    setPhotoState((prev) => ({
-      ...prev,
-      [id]: !prev[id],
-    }));
-  };
+      <View style={styles.tagRow}>
+        {['Vehicle API', 'Camera Capture', 'Engine Audio', 'AI Final Report'].map((tag) => (
+          <View key={tag} style={styles.tagPill}>
+            <Text style={styles.tagText}>{tag}</Text>
+          </View>
+        ))}
+      </View>
 
-  const toggleStructural = (id: string, field: 'reviewed' | 'flagged'): void => {
-    setStructuralState((prev) => {
-      const next = !prev[id]?.[field];
-      return {
-        ...prev,
-        [id]: {
-          reviewed: field === 'reviewed' ? next : prev[id]?.reviewed ?? false,
-          flagged: field === 'flagged' ? next : prev[id]?.flagged ?? false,
-        },
-      };
-    });
-  };
+      <View style={styles.heroCard}>
+        <Text style={styles.heroLabel}>Backend Endpoint</Text>
+        <Text style={styles.heroValueTiny}>{API_BASE_URL}</Text>
+        <Text style={styles.heroSub}>Set `EXPO_PUBLIC_API_BASE_URL` for physical device testing.</Text>
+      </View>
 
-  const startRecording = (): void => {
-    if (noiseState === 'recording') {
-      return;
-    }
-    setNoiseState('recording');
-    setWaveHeights([20, 18, 22, 16, 19]);
-  };
+      <Pressable style={styles.primaryButton} onPress={() => goToStep('details')}>
+        <Text style={styles.primaryButtonText}>Start Inspection</Text>
+      </Pressable>
+    </View>
+  );
 
-  const resetInspection = (): void => {
-    setDetails({
-      carName: '',
-      registrationNumber: '',
-      askingPrice: '',
-      odometer: '',
-    });
-    setPhotoState(createInitialPhotoState());
-    setStructuralState(createInitialStructuralState());
-    setNoiseState('idle');
-    setWaveHeights(WAVE_IDLE);
-    setStepIndex(0);
-  };
+  const renderDetails = () => (
+    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.sectionTitle}>Fill Car Details</Text>
+      <Text style={styles.mutedText}>Fetch vehicle details using your configured India vehicle API connector.</Text>
 
-  const vehicleName = details.carName.trim() || 'Selected Vehicle';
-  const vehicleMeta = `${details.registrationNumber.trim() || 'Reg no not added'} | ${formatInr(
-    details.askingPrice
-  )} | ${details.odometer.trim() ? `${details.odometer.trim()} km` : 'Odometer not added'}`;
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Car Name</Text>
+        <TextInput
+          value={details.carName}
+          onChangeText={(text) => updateDetailField('carName', text)}
+          placeholder="e.g. Hyundai i20 Sportz"
+          placeholderTextColor="#8ca2af"
+          style={styles.input}
+        />
+      </View>
 
-  const negotiationText =
-    decision.label === 'BUY'
-      ? 'Negotiation: Minimal, ask for service package + documentation'
-      : decision.label === 'NEGOTIATE'
-        ? 'Negotiation: Rs 30,000 to Rs 70,000 lower + full mechanic PPI'
-        : 'Negotiation: Prefer walk away unless full structural proof is provided';
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Registration Number</Text>
+        <TextInput
+          value={details.registrationNumber}
+          onChangeText={(text) => updateDetailField('registrationNumber', text.toUpperCase())}
+          placeholder="e.g. AS01AB1234"
+          placeholderTextColor="#8ca2af"
+          autoCapitalize="characters"
+          style={styles.input}
+        />
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Asking Price (INR)</Text>
+        <TextInput
+          value={details.askingPrice}
+          onChangeText={(text) => updateDetailField('askingPrice', text.replace(/[^0-9]/g, ''))}
+          placeholder="e.g. 520000"
+          placeholderTextColor="#8ca2af"
+          keyboardType="numeric"
+          style={styles.input}
+        />
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.fieldLabel}>Odometer (km)</Text>
+        <TextInput
+          value={details.odometer}
+          onChangeText={(text) => updateDetailField('odometer', text.replace(/[^0-9]/g, ''))}
+          placeholder="e.g. 64000"
+          placeholderTextColor="#8ca2af"
+          keyboardType="numeric"
+          style={styles.input}
+        />
+      </View>
+
+      <Pressable style={styles.secondaryButton} onPress={handleVehicleLookup}>
+        <Text style={styles.secondaryButtonText}>{vehicleLoading ? 'Fetching...' : 'Fetch Vehicle API Details'}</Text>
+      </Pressable>
+
+      {vehicleError ? <Text style={styles.errorText}>{vehicleError}</Text> : null}
+
+      {vehicleData ? (
+        <View style={styles.resultCard}>
+          <Text style={styles.resultTitle}>Vehicle API Response</Text>
+          <Text style={styles.resultBody}>{JSON.stringify(vehicleData, null, 2)}</Text>
+        </View>
+      ) : null}
+
+      <Pressable style={styles.primaryButton} onPress={() => goToStep('photos')}>
+        <Text style={styles.primaryButtonText}>Continue to Photo Capture</Text>
+      </Pressable>
+    </ScrollView>
+  );
+
+  const renderPhotos = () => (
+    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.sectionTitle}>Capture Car Photos</Text>
+      <Text style={styles.mutedText}>Capture each checkpoint with real camera and run AI validation.</Text>
+
+      <View style={styles.counterPill}>
+        <Text style={styles.counterText}>{capturedPhotoCount} / {PHOTO_CHECKPOINTS.length} photos captured</Text>
+      </View>
+
+      <View style={styles.photoList}>
+        {PHOTO_CHECKPOINTS.map((checkpoint) => {
+          const asset = photos[checkpoint.id];
+          return (
+            <View key={checkpoint.id} style={styles.photoRow}>
+              <View style={styles.photoInfo}>
+                <Text style={styles.photoLabel}>{checkpoint.label}</Text>
+                <Text style={styles.photoHint}>{checkpoint.hint}</Text>
+                <Text style={asset ? styles.photoCapturedText : styles.photoPendingText}>
+                  {asset ? 'Captured' : 'Pending'}
+                </Text>
+              </View>
+
+              {asset ? <Image source={{ uri: asset.uri }} style={styles.photoThumb} /> : <View style={styles.photoThumbPlaceholder} />}
+
+              <Pressable style={styles.smallActionBtn} onPress={() => capturePhoto(checkpoint.id)}>
+                <Text style={styles.smallActionText}>{asset ? 'Retake' : 'Capture'}</Text>
+              </Pressable>
+            </View>
+          );
+        })}
+      </View>
+
+      <Pressable style={styles.secondaryButton} onPress={analyzeCapturedPhotos}>
+        <Text style={styles.secondaryButtonText}>{photoAnalyzeLoading ? 'Analyzing Photos...' : 'Run AI Photo Validation'}</Text>
+      </Pressable>
+
+      {photoError ? <Text style={styles.errorText}>{photoError}</Text> : null}
+
+      {photoAnalysis ? (
+        <View style={styles.resultCard}>
+          <Text style={styles.resultTitle}>AI Photo Analysis</Text>
+          <Text style={styles.resultBody}>{JSON.stringify(photoAnalysis, null, 2)}</Text>
+        </View>
+      ) : null}
+
+      <Pressable style={styles.primaryButton} onPress={() => goToStep('structural')}>
+        <Text style={styles.primaryButtonText}>Continue to Structural Check</Text>
+      </Pressable>
+    </ScrollView>
+  );
+
+  const renderStructural = () => (
+    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.sectionTitle}>Structural Damage Check</Text>
+      <Text style={styles.mutedText}>Mark reviewed points and flag suspicious accident indicators.</Text>
+
+      <View style={styles.counterPill}>
+        <Text style={styles.counterText}>Reviewed {structuralSummary.reviewed}/10 | Flagged {structuralSummary.flagged}</Text>
+      </View>
+
+      <View style={styles.structuralList}>
+        {STRUCTURAL_CHECKPOINTS.map((item) => {
+          const state = structuralState[item.id];
+
+          return (
+            <View
+              key={item.id}
+              style={[
+                styles.structuralCard,
+                state?.reviewed && styles.structuralCardReviewed,
+                state?.flagged && styles.structuralCardFlagged,
+              ]}
+            >
+              <Text style={styles.structuralTitle}>{item.title}</Text>
+              <Text style={styles.structuralBody}>{item.description}</Text>
+
+              <View style={styles.structuralActionRow}>
+                <Pressable
+                  style={[styles.smallButton, styles.smallButtonReview, state?.reviewed && styles.smallButtonReviewActive]}
+                  onPress={() => toggleStructural(item.id, 'reviewed')}
+                >
+                  <Text style={[styles.smallButtonText, styles.smallButtonReviewText]}>
+                    {state?.reviewed ? 'Reviewed' : 'Mark Reviewed'}
+                  </Text>
+                </Pressable>
+
+                <Pressable
+                  style={[styles.smallButton, styles.smallButtonFlag, state?.flagged && styles.smallButtonFlagActive]}
+                  onPress={() => toggleStructural(item.id, 'flagged')}
+                >
+                  <Text style={[styles.smallButtonText, styles.smallButtonFlagText]}>
+                    {state?.flagged ? 'Flagged' : 'Flag Issue'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          );
+        })}
+      </View>
+
+      <Pressable style={styles.primaryButton} onPress={() => goToStep('noise')}>
+        <Text style={styles.primaryButtonText}>Continue to Engine Audio</Text>
+      </Pressable>
+    </ScrollView>
+  );
+
+  const renderNoise = () => (
+    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.sectionTitle}>Engine Noise Recording</Text>
+      <Text style={styles.mutedText}>Record real engine idle + light rev, then run AI audio analysis.</Text>
+
+      <View style={styles.noiseCard}>
+        <Text style={styles.noiseStatusLabel}>
+          {noiseState === 'idle' && 'Ready to record'}
+          {noiseState === 'recording' && 'Recording...'}
+          {noiseState === 'recorded' && 'Recording complete'}
+        </Text>
+
+        {noiseState !== 'recording' ? (
+          <Pressable style={styles.secondaryButton} onPress={startRecording}>
+            <Text style={styles.secondaryButtonText}>Start Recording</Text>
+          </Pressable>
+        ) : (
+          <Pressable style={styles.secondaryButton} onPress={stopRecording}>
+            <Text style={styles.secondaryButtonText}>Stop Recording</Text>
+          </Pressable>
+        )}
+
+        <Pressable style={styles.secondaryButton} onPress={analyzeEngineAudio}>
+          <Text style={styles.secondaryButtonText}>{audioAnalyzeLoading ? 'Analyzing Audio...' : 'Run AI Audio Analysis'}</Text>
+        </Pressable>
+
+        {audioError ? <Text style={styles.errorText}>{audioError}</Text> : null}
+      </View>
+
+      {audioTranscript ? (
+        <View style={styles.resultCard}>
+          <Text style={styles.resultTitle}>Transcript</Text>
+          <Text style={styles.resultBody}>{audioTranscript}</Text>
+        </View>
+      ) : null}
+
+      {audioAnalysis ? (
+        <View style={styles.resultCard}>
+          <Text style={styles.resultTitle}>AI Audio Analysis</Text>
+          <Text style={styles.resultBody}>{JSON.stringify(audioAnalysis, null, 2)}</Text>
+        </View>
+      ) : null}
+
+      <Pressable style={styles.primaryButton} onPress={() => goToStep('report')}>
+        <Text style={styles.primaryButtonText}>Continue to Final Report</Text>
+      </Pressable>
+    </ScrollView>
+  );
+
+  const renderReport = () => (
+    <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+      <Text style={styles.sectionTitle}>AI Final Report</Text>
+      <Text style={styles.mutedText}>Generate a structured buying decision from all captured signals.</Text>
+
+      <View style={styles.resultCard}>
+        <Text style={styles.resultTitle}>Current Signal Summary</Text>
+        <Text style={styles.listItem}>- Vehicle API: {vehicleData ? 'Connected' : 'Not fetched'}</Text>
+        <Text style={styles.listItem}>- Photos captured: {capturedPhotoCount}/{PHOTO_CHECKPOINTS.length}</Text>
+        <Text style={styles.listItem}>- Photo AI analysis: {photoAnalysis ? 'Available' : 'Pending'}</Text>
+        <Text style={styles.listItem}>- Structural reviewed: {structuralSummary.reviewed}/10</Text>
+        <Text style={styles.listItem}>- Structural flagged: {structuralSummary.flagged}</Text>
+        <Text style={styles.listItem}>- Audio AI analysis: {audioAnalysis ? 'Available' : 'Pending'}</Text>
+        <Text style={styles.listItem}>- Fallback score (without AI report schema): {fallbackScore}</Text>
+      </View>
+
+      <Pressable style={styles.primaryButton} onPress={generateAiReport}>
+        <Text style={styles.primaryButtonText}>{reportLoading ? 'Generating Report...' : 'Generate Final AI Report'}</Text>
+      </Pressable>
+
+      {reportError ? <Text style={styles.errorText}>{reportError}</Text> : null}
+
+      {finalReport ? (
+        <View style={styles.reportCard}>
+          <Text style={styles.reportHeading}>Decision: {finalReport.decision || 'N/A'}</Text>
+          <Text style={styles.reportMeta}>Score: {finalReport.overall_score ?? 'N/A'} | Confidence: {finalReport.confidence ?? 'N/A'}</Text>
+
+          <Text style={styles.reportSectionTitle}>Vehicle Summary</Text>
+          <Text style={styles.listItem}>- Reg: {finalReport.vehicle_summary?.registration || details.registrationNumber || 'N/A'}</Text>
+          <Text style={styles.listItem}>- Model: {finalReport.vehicle_summary?.make_model || details.carName || 'N/A'}</Text>
+          <Text style={styles.listItem}>- Fuel: {finalReport.vehicle_summary?.fuel_type || 'N/A'}</Text>
+          <Text style={styles.listItem}>- Reg Status: {finalReport.vehicle_summary?.registration_status || 'N/A'}</Text>
+
+          <Text style={styles.reportSectionTitle}>Red Flags</Text>
+          {(finalReport.red_flags || []).map((flag, index) => (
+            <Text key={`${flag}-${index}`} style={styles.listItem}>- {flag}</Text>
+          ))}
+          {!finalReport.red_flags?.length ? <Text style={styles.listItem}>- None listed</Text> : null}
+
+          <Text style={styles.reportSectionTitle}>Inspection Findings</Text>
+          {(finalReport.inspection_findings || []).map((finding, index) => (
+            <Text key={`${finding.category}-${index}`} style={styles.listItem}>
+              - {finding.category}: {finding.severity} | {finding.evidence}
+            </Text>
+          ))}
+
+          <Text style={styles.reportSectionTitle}>Repair Estimate (INR)</Text>
+          {(finalReport.repair_estimates_inr || []).map((item, index) => (
+            <Text key={`${item.item}-${index}`} style={styles.listItem}>
+              - {item.item}: Rs {item.min ?? 0} to Rs {item.max ?? 0}
+            </Text>
+          ))}
+
+          <Text style={styles.reportSectionTitle}>Negotiation</Text>
+          <Text style={styles.listItem}>
+            - Target discount: Rs {finalReport.negotiation_strategy?.target_discount_min ?? 0} to Rs {finalReport.negotiation_strategy?.target_discount_max ?? 0}
+          </Text>
+          {(finalReport.negotiation_strategy?.talking_points || []).map((point, index) => (
+            <Text key={`${point}-${index}`} style={styles.listItem}>- {point}</Text>
+          ))}
+
+          <Text style={styles.reportSectionTitle}>Next Steps</Text>
+          {(finalReport.next_steps || []).map((step, index) => (
+            <Text key={`${step}-${index}`} style={styles.listItem}>- {step}</Text>
+          ))}
+        </View>
+      ) : null}
+
+      <Pressable style={styles.secondaryButton} onPress={restartInspection}>
+        <Text style={styles.secondaryButtonText}>Run New Inspection</Text>
+      </Pressable>
+    </ScrollView>
+  );
 
   const renderScreen = () => {
-    if (currentStep.id === 'intro') {
-      return (
-        <View style={styles.contentWrap}>
-          <Text style={styles.headline}>Buy Better Used Cars in India</Text>
-          <Text style={styles.mutedText}>
-            Guided flow for details capture, visual inspection, structural damage checks, and engine sound risk.
-          </Text>
-
-          <View style={styles.tagRow}>
-            {QUICK_TAGS.map((tag) => (
-              <View key={tag} style={styles.tagPill}>
-                <Text style={styles.tagText}>{tag}</Text>
-              </View>
-            ))}
-          </View>
-
-          <View style={styles.heroCard}>
-            <Text style={styles.heroLabel}>Estimated Time</Text>
-            <Text style={styles.heroValue}>8-10 min</Text>
-            <Text style={styles.heroSub}>Best in daylight + quiet surroundings</Text>
-          </View>
-
-          <Pressable style={styles.primaryButton} onPress={() => goToStep('details')}>
-            <Text style={styles.primaryButtonText}>Start Inspection</Text>
-          </Pressable>
-        </View>
-      );
-    }
-
-    if (currentStep.id === 'details') {
-      return (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <Text style={styles.sectionTitle}>Fill Car Details</Text>
-          <Text style={styles.mutedText}>Enter basics to personalize checks and report output.</Text>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Car Name</Text>
-            <TextInput
-              value={details.carName}
-              onChangeText={(text) => updateDetailField('carName', text)}
-              placeholder="e.g. Hyundai i20 Sportz"
-              placeholderTextColor="#8ca2af"
-              style={styles.input}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Registration Number</Text>
-            <TextInput
-              value={details.registrationNumber}
-              onChangeText={(text) => updateDetailField('registrationNumber', text.toUpperCase())}
-              placeholder="e.g. AS01AB1234"
-              placeholderTextColor="#8ca2af"
-              autoCapitalize="characters"
-              style={styles.input}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Asking Price (INR)</Text>
-            <TextInput
-              value={details.askingPrice}
-              onChangeText={(text) => updateDetailField('askingPrice', text.replace(/[^0-9]/g, ''))}
-              placeholder="e.g. 520000"
-              placeholderTextColor="#8ca2af"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Odometer (km)</Text>
-            <TextInput
-              value={details.odometer}
-              onChangeText={(text) => updateDetailField('odometer', text.replace(/[^0-9]/g, ''))}
-              placeholder="e.g. 64000"
-              placeholderTextColor="#8ca2af"
-              keyboardType="numeric"
-              style={styles.input}
-            />
-          </View>
-
-          <Pressable style={styles.primaryButton} onPress={() => goToStep('photos')}>
-            <Text style={styles.primaryButtonText}>Save and Continue</Text>
-          </Pressable>
-        </ScrollView>
-      );
-    }
-
-    if (currentStep.id === 'photos') {
-      return (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <Text style={styles.sectionTitle}>Capture Car Photos</Text>
-          <Text style={styles.mutedText}>Tap each tile to simulate captured evidence.</Text>
-
-          <View style={styles.counterPill}>
-            <Text style={styles.counterText}>{photoCapturedCount} / 6 photos captured</Text>
-          </View>
-
-          <View style={styles.gridWrap}>
-            {PHOTO_CHECKPOINTS.map((item) => {
-              const captured = photoState[item.id];
-              return (
-                <Pressable
-                  key={item.id}
-                  onPress={() => togglePhoto(item.id)}
-                  style={[styles.photoTile, captured && styles.photoTileCaptured]}
-                >
-                  <Text style={[styles.photoTileLabel, captured && styles.photoTileLabelCaptured]}>
-                    {captured ? `${item.label} - Captured` : item.label}
-                  </Text>
-                  <Text style={styles.photoTileHint}>{item.hint}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          <Pressable style={styles.primaryButton} onPress={() => goToStep('structural')}>
-            <Text style={styles.primaryButtonText}>Continue to Structural Check</Text>
-          </Pressable>
-        </ScrollView>
-      );
-    }
-
-    if (currentStep.id === 'structural') {
-      return (
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          <Text style={styles.sectionTitle}>Structural Damage Check</Text>
-          <Text style={styles.mutedText}>Review each point and flag suspicious accident indicators.</Text>
-
-          <View style={styles.counterPill}>
-            <Text style={styles.counterText}>
-              Reviewed {structuralSummary.reviewed}/10 | Flagged {structuralSummary.flaggedCount}
-            </Text>
-          </View>
-
-          <View style={styles.structuralList}>
-            {STRUCTURAL_CHECKPOINTS.map((item) => {
-              const state = structuralState[item.id];
-              return (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.structuralCard,
-                    state.reviewed && styles.structuralCardReviewed,
-                    state.flagged && styles.structuralCardFlagged,
-                  ]}
-                >
-                  <Text style={styles.structuralTitle}>{item.title}</Text>
-                  <Text style={styles.structuralBody}>{item.description}</Text>
-
-                  <View style={styles.structuralActionRow}>
-                    <Pressable
-                      style={[styles.smallButton, styles.smallButtonReview, state.reviewed && styles.smallButtonReviewActive]}
-                      onPress={() => toggleStructural(item.id, 'reviewed')}
-                    >
-                      <Text
-                        style={[
-                          styles.smallButtonText,
-                          styles.smallButtonReviewText,
-                          state.reviewed && styles.smallButtonReviewTextActive,
-                        ]}
-                      >
-                        {state.reviewed ? 'Reviewed' : 'Mark Reviewed'}
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      style={[styles.smallButton, styles.smallButtonFlag, state.flagged && styles.smallButtonFlagActive]}
-                      onPress={() => toggleStructural(item.id, 'flagged')}
-                    >
-                      <Text style={[styles.smallButtonText, styles.smallButtonFlagText, state.flagged && styles.smallButtonFlagTextActive]}>
-                        {state.flagged ? 'Flagged' : 'Flag Issue'}
-                      </Text>
-                    </Pressable>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-
-          <Pressable style={styles.primaryButton} onPress={() => goToStep('noise')}>
-            <Text style={styles.primaryButtonText}>Continue to Engine Noise</Text>
-          </Pressable>
-        </ScrollView>
-      );
-    }
-
-    if (currentStep.id === 'noise') {
-      const isRecording = noiseState === 'recording';
-
-      return (
-        <View style={styles.contentWrap}>
-          <Text style={styles.sectionTitle}>Listen to Engine Noise</Text>
-          <Text style={styles.mutedText}>Place phone 15-20 cm from hood and record idle + light rev.</Text>
-
-          <View style={styles.noiseCard}>
-            <View style={styles.waveWrap}>
-              {waveHeights.map((height, index) => (
-                <View
-                  key={index}
-                  style={[
-                    styles.waveBar,
-                    {
-                      height,
-                    },
-                    isRecording && styles.waveBarActive,
-                  ]}
-                />
-              ))}
-            </View>
-
-            <Text style={styles.noiseStatusText}>
-              {noiseState === 'idle' && 'Ready to record'}
-              {noiseState === 'recording' && 'Listening... capturing 20 second sample'}
-              {noiseState === 'analyzed' && 'Analysis complete'}
-            </Text>
-
-            <Pressable
-              style={[styles.secondaryButton, isRecording && styles.secondaryButtonDisabled]}
-              disabled={isRecording}
-              onPress={startRecording}
-            >
-              <Text style={styles.secondaryButtonText}>
-                {noiseState === 'recording' ? 'Recording...' : noiseState === 'analyzed' ? 'Record Again' : 'Start Recording'}
-              </Text>
-            </Pressable>
-          </View>
-
-          {noiseState === 'analyzed' && (
-            <View style={styles.riskCard}>
-              <Text style={styles.riskTitle}>Noise Risk: Mild irregular tick at idle</Text>
-              <Text style={styles.riskBody}>Possible belt or pulley wear. Recommend mechanic confirmation.</Text>
-            </View>
-          )}
-
-          <Pressable style={styles.primaryButton} onPress={() => goToStep('report')}>
-            <Text style={styles.primaryButtonText}>Generate Final Report</Text>
-          </Pressable>
-        </View>
-      );
-    }
-
-    return (
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        <Text style={styles.sectionTitle}>Final Inspection Report</Text>
-
-        <View style={styles.reportCard}>
-          <Text style={styles.reportLabel}>Vehicle</Text>
-          <Text style={styles.reportVehicle}>{vehicleName}</Text>
-          <Text style={styles.reportMeta}>{vehicleMeta}</Text>
-
-          <View style={styles.scoreRow}>
-            <View>
-              <Text style={styles.reportLabel}>Health Score</Text>
-              <Text style={styles.scoreValue}>{score}</Text>
-            </View>
-
-            <View>
-              <Text style={styles.reportLabel}>Decision</Text>
-              <Text style={[styles.decisionValue, { color: decision.color }]}>{decision.label}</Text>
-            </View>
-          </View>
-
-          <View style={styles.listWrap}>
-            <Text style={styles.listItem}>- RC details captured</Text>
-            <Text style={styles.listItem}>- Photos captured: {photoCapturedCount} / 6</Text>
-            <Text style={styles.listItem}>- Structural reviewed: {structuralSummary.reviewed} / 10</Text>
-            <Text style={styles.listItem}>- Structural issues flagged: {structuralSummary.flaggedCount}</Text>
-            <Text style={styles.listItem}>
-              - Flagged areas: {structuralSummary.flaggedTitles.length ? structuralSummary.flaggedTitles.join(', ') : 'None'}
-            </Text>
-            <Text style={styles.listItem}>
-              - Engine noise: {noiseState === 'analyzed' ? 'Mild anomaly detected' : 'Not analyzed'}
-            </Text>
-          </View>
-
-          <View style={styles.summaryBox}>
-            <Text style={styles.summaryText}>{decision.message}</Text>
-            <Text style={styles.summarySubText}>{negotiationText}</Text>
-          </View>
-        </View>
-
-        <Pressable style={styles.secondaryButton} onPress={resetInspection}>
-          <Text style={styles.secondaryButtonText}>Run New Inspection</Text>
-        </Pressable>
-      </ScrollView>
-    );
+    if (currentStep.id === 'intro') return renderIntro();
+    if (currentStep.id === 'details') return renderDetails();
+    if (currentStep.id === 'photos') return renderPhotos();
+    if (currentStep.id === 'structural') return renderStructural();
+    if (currentStep.id === 'noise') return renderNoise();
+    return renderReport();
   };
 
   return (
@@ -659,10 +887,10 @@ const styles = StyleSheet.create({
     color: '#5f7785',
     fontWeight: '700',
   },
-  heroValue: {
-    fontSize: 32,
-    lineHeight: 34,
-    fontWeight: '800',
+  heroValueTiny: {
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '700',
     color: '#143140',
   },
   heroSub: {
@@ -701,40 +929,67 @@ const styles = StyleSheet.create({
     color: '#2f5161',
     fontWeight: '700',
   },
-  gridWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+  photoList: {
+    gap: 9,
   },
-  photoTile: {
-    width: '48.7%',
-    minHeight: 98,
+  photoRow: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(39, 79, 96, 0.25)',
-    borderStyle: 'dashed',
-    backgroundColor: '#f8fcfe',
+    borderColor: 'rgba(16, 46, 63, 0.12)',
+    backgroundColor: '#ffffff',
     padding: 10,
-    gap: 6,
+    gap: 8,
   },
-  photoTileCaptured: {
-    borderStyle: 'solid',
-    borderColor: 'rgba(25, 125, 77, 0.4)',
-    backgroundColor: 'rgba(216, 248, 231, 0.7)',
+  photoInfo: {
+    gap: 2,
   },
-  photoTileLabel: {
-    color: '#2b4a58',
+  photoLabel: {
+    color: '#173546',
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: 14,
+  },
+  photoHint: {
+    color: '#4d6876',
+    fontSize: 12,
     lineHeight: 17,
   },
-  photoTileLabelCaptured: {
-    color: '#17643f',
+  photoPendingText: {
+    color: '#8f5a00',
+    fontWeight: '700',
+    fontSize: 12,
   },
-  photoTileHint: {
-    color: '#607987',
-    fontSize: 11,
-    lineHeight: 14,
+  photoCapturedText: {
+    color: '#17643f',
+    fontWeight: '700',
+    fontSize: 12,
+  },
+  photoThumb: {
+    width: '100%',
+    height: 140,
+    borderRadius: 10,
+    backgroundColor: '#f0f5f8',
+  },
+  photoThumbPlaceholder: {
+    width: '100%',
+    height: 80,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(22, 49, 66, 0.15)',
+    borderStyle: 'dashed',
+    backgroundColor: '#f7fbfd',
+  },
+  smallActionBtn: {
+    borderWidth: 1,
+    borderColor: 'rgba(16, 49, 66, 0.16)',
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    paddingVertical: 9,
+    alignItems: 'center',
+  },
+  smallActionText: {
+    color: '#1f4658',
+    fontSize: 13,
+    fontWeight: '700',
   },
   structuralList: {
     gap: 10,
@@ -800,14 +1055,8 @@ const styles = StyleSheet.create({
   smallButtonReviewText: {
     color: '#0d6962',
   },
-  smallButtonReviewTextActive: {
-    color: '#146741',
-  },
   smallButtonFlagText: {
     color: '#a53d2e',
-  },
-  smallButtonFlagTextActive: {
-    color: '#8c2e22',
   },
   noiseCard: {
     borderRadius: 16,
@@ -817,126 +1066,65 @@ const styles = StyleSheet.create({
     padding: 14,
     gap: 12,
   },
-  waveWrap: {
-    height: 90,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 44, 59, 0.12)',
-    backgroundColor: '#f3fafc',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  waveBar: {
-    width: 8,
-    borderRadius: 999,
-    backgroundColor: '#8fb4c2',
-  },
-  waveBarActive: {
-    backgroundColor: '#0e9d8f',
-  },
-  noiseStatusText: {
+  noiseStatusLabel: {
     fontSize: 13,
+    color: '#355667',
     fontWeight: '700',
-    color: '#345566',
   },
-  riskCard: {
+  resultCard: {
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(181, 114, 0, 0.3)',
-    backgroundColor: '#fff2df',
+    borderColor: 'rgba(16, 49, 66, 0.12)',
+    backgroundColor: '#f8fcff',
     padding: 11,
-    gap: 5,
+    gap: 6,
   },
-  riskTitle: {
-    fontSize: 13,
-    color: '#694904',
+  resultTitle: {
+    color: '#214353',
     fontWeight: '800',
+    fontSize: 13,
   },
-  riskBody: {
-    fontSize: 12,
+  resultBody: {
+    color: '#3a5868',
+    fontSize: 11,
     lineHeight: 16,
-    color: '#7f5a07',
+    fontFamily: 'Courier',
   },
   reportCard: {
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(15, 44, 58, 0.12)',
+    borderColor: 'rgba(16, 49, 66, 0.12)',
     backgroundColor: '#ffffff',
-    padding: 14,
-    gap: 10,
+    padding: 12,
+    gap: 7,
   },
-  reportLabel: {
-    color: '#617784',
-    fontWeight: '700',
-    fontSize: 11,
-    letterSpacing: 0.2,
-    textTransform: 'uppercase',
-  },
-  reportVehicle: {
-    color: '#163241',
+  reportHeading: {
+    color: '#153141',
+    fontSize: 18,
     fontWeight: '800',
-    fontSize: 21,
-    lineHeight: 24,
   },
   reportMeta: {
-    color: '#55707e',
+    color: '#4f6b79',
     fontSize: 12,
-    lineHeight: 17,
+    fontWeight: '700',
   },
-  scoreRow: {
+  reportSectionTitle: {
     marginTop: 4,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 46, 62, 0.1)',
-    backgroundColor: '#f5fbfd',
-    padding: 10,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  scoreValue: {
-    marginTop: 4,
-    color: '#153141',
-    fontSize: 36,
-    lineHeight: 38,
+    color: '#234353',
+    fontSize: 13,
     fontWeight: '800',
-  },
-  decisionValue: {
-    marginTop: 8,
-    fontSize: 20,
-    fontWeight: '800',
-  },
-  listWrap: {
-    gap: 5,
   },
   listItem: {
     color: '#385463',
     fontSize: 12,
     lineHeight: 17,
   },
-  summaryBox: {
-    marginTop: 3,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 49, 66, 0.12)',
-    backgroundColor: '#f8fcff',
-    padding: 10,
-    gap: 6,
-  },
-  summaryText: {
-    color: '#244352',
-    fontWeight: '700',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  summarySubText: {
-    color: '#486473',
+  errorText: {
+    color: '#b53b2f',
     fontSize: 12,
-    lineHeight: 17,
+    fontWeight: '700',
   },
   primaryButton: {
-    marginTop: 'auto',
     borderRadius: 12,
     backgroundColor: '#0b8f83',
     paddingVertical: 13,
@@ -956,9 +1144,6 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  secondaryButtonDisabled: {
-    opacity: 0.6,
   },
   secondaryButtonText: {
     color: '#264857',
