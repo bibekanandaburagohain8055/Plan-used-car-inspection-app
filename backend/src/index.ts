@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import multer from 'multer';
 import OpenAI from 'openai';
+import { toFile } from 'openai/uploads';
 import { z } from 'zod';
 
 dotenv.config();
@@ -16,6 +17,8 @@ app.use(express.json({ limit: '10mb' }));
 
 const openaiKey = process.env.OPENAI_API_KEY;
 const openai = openaiKey ? new OpenAI({ apiKey: openaiKey }) : null;
+
+type JsonRecord = Record<string, unknown>;
 
 const inspectionReportSchema = {
   name: 'inspection_report',
@@ -157,20 +160,6 @@ const finalReportInputSchema = z.object({
   audioAnalysis: z.record(z.string(), z.any()).optional().default({}),
 });
 
-const getHeaders = (): Record<string, string> => {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
-
-  if (process.env.INDIA_VEHICLE_API_AUTH_HEADER && process.env.INDIA_VEHICLE_API_AUTH_TOKEN) {
-    headers[process.env.INDIA_VEHICLE_API_AUTH_HEADER] = process.env.INDIA_VEHICLE_API_AUTH_TOKEN;
-  }
-
-  if (process.env.INDIA_VEHICLE_API_KEY_HEADER && process.env.INDIA_VEHICLE_API_KEY) {
-    headers[process.env.INDIA_VEHICLE_API_KEY_HEADER] = process.env.INDIA_VEHICLE_API_KEY;
-  }
-
-  return headers;
-};
-
 const normalizeReg = (value: string): string => value.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 const safeJsonParse = <T>(value: string): T | null => {
@@ -181,12 +170,152 @@ const safeJsonParse = <T>(value: string): T | null => {
   }
 };
 
+const isJsonRecord = (value: unknown): value is JsonRecord =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const asString = (value: unknown, fallback = ''): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return fallback;
+};
+
+const normalizeVehicleData = (payload: unknown, registrationNumber: string): JsonRecord => {
+  const root = isJsonRecord(payload) ? payload : {};
+  const data = isJsonRecord(root.data) ? root.data : root;
+
+  return {
+    registrationNumber:
+      asString(data.rc_number) ||
+      asString(data.registrationNumber) ||
+      asString(data.registration_number) ||
+      registrationNumber,
+    ownerName: asString(data.owner_name) || asString(data.ownerName) || '',
+    makerModel:
+      asString(data.maker_model) ||
+      asString(data.makerModel) ||
+      asString(data.make_model) ||
+      asString(data.vehicle_model) ||
+      '',
+    fuelType: asString(data.fuel_type) || asString(data.fuelType) || '',
+    registrationStatus:
+      asString(data.rc_status) ||
+      asString(data.registration_status) ||
+      asString(data.status) ||
+      asString(data.registrationStatus) ||
+      '',
+    insuranceValidTill:
+      asString(data.insurance_upto) ||
+      asString(data.insuranceValidTill) ||
+      asString(data.insurance_valid_till) ||
+      '',
+    registeredAt: asString(data.registered_at) || asString(data.registeredAt) || '',
+  };
+};
+
+const getGenericHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+
+  if (process.env.INDIA_VEHICLE_API_AUTH_HEADER && process.env.INDIA_VEHICLE_API_AUTH_TOKEN) {
+    headers[process.env.INDIA_VEHICLE_API_AUTH_HEADER] = process.env.INDIA_VEHICLE_API_AUTH_TOKEN;
+  }
+
+  if (process.env.INDIA_VEHICLE_API_KEY_HEADER && process.env.INDIA_VEHICLE_API_KEY) {
+    headers[process.env.INDIA_VEHICLE_API_KEY_HEADER] = process.env.INDIA_VEHICLE_API_KEY;
+  }
+
+  const extraHeaders = process.env.INDIA_VEHICLE_API_HEADERS_JSON;
+  if (extraHeaders) {
+    const parsed = safeJsonParse<unknown>(extraHeaders);
+    if (isJsonRecord(parsed)) {
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === 'string' && value) {
+          headers[key] = value;
+        }
+      }
+    }
+  }
+
+  return headers;
+};
+
+const callApyfluxLookup = async (registrationNumber: string) => {
+  const url = process.env.APYFLUX_URL || 'https://gateway.apyflux.com/rc-full';
+  const appId = process.env.APYFLUX_APP_ID;
+  const clientId = process.env.APYFLUX_CLIENT_ID;
+  const apiKey = process.env.APYFLUX_API_KEY;
+
+  if (!appId || !clientId || !apiKey) {
+    throw new Error('APYFLUX_APP_ID, APYFLUX_CLIENT_ID, or APYFLUX_API_KEY missing.');
+  }
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-app-id': appId,
+      'x-client-id': clientId,
+      'x-api-key': apiKey,
+    },
+    body: JSON.stringify({ id_number: registrationNumber }),
+  });
+
+  const rawText = await response.text();
+  const payload = safeJsonParse<unknown>(rawText) ?? rawText;
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload,
+  };
+};
+
+const callGenericLookup = async (registrationNumber: string) => {
+  const vehicleApiUrl = process.env.INDIA_VEHICLE_API_URL;
+  if (!vehicleApiUrl) {
+    return null;
+  }
+
+  const method = (process.env.INDIA_VEHICLE_API_METHOD || 'POST').toUpperCase();
+  const bodyField = process.env.INDIA_VEHICLE_API_BODY_FIELD || 'registrationNumber';
+
+  const requestUrl =
+    method === 'GET'
+      ? `${vehicleApiUrl}${vehicleApiUrl.includes('?') ? '&' : '?'}${encodeURIComponent(bodyField)}=${encodeURIComponent(registrationNumber)}`
+      : vehicleApiUrl;
+
+  const response = await fetch(requestUrl, {
+    method,
+    headers: getGenericHeaders(),
+    body: method === 'GET' ? undefined : JSON.stringify({ [bodyField]: registrationNumber }),
+  });
+
+  const rawText = await response.text();
+  const payload = safeJsonParse<unknown>(rawText) ?? rawText;
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    payload,
+  };
+};
+
+const resolveVehicleProvider = (): 'apyflux' | 'generic' => {
+  const provider = (process.env.INDIA_VEHICLE_PROVIDER || 'generic').trim().toLowerCase();
+  return provider === 'apyflux' ? 'apyflux' : 'generic';
+};
+
 app.get('/health', (_req, res) => {
+  const provider = resolveVehicleProvider();
+
   res.json({
     ok: true,
     service: 'used-car-backend',
+    vehicleProvider: provider,
     openaiConfigured: Boolean(openaiKey),
-    vehicleApiConfigured: Boolean(process.env.INDIA_VEHICLE_API_URL),
+    vehicleApiConfigured:
+      provider === 'apyflux'
+        ? Boolean(process.env.APYFLUX_APP_ID && process.env.APYFLUX_CLIENT_ID && process.env.APYFLUX_API_KEY)
+        : Boolean(process.env.INDIA_VEHICLE_API_URL),
   });
 });
 
@@ -197,51 +326,62 @@ app.post('/api/vehicle/lookup', async (req, res) => {
   }
 
   const registrationNumber = normalizeReg(parsed.data.registrationNumber);
-  const vehicleApiUrl = process.env.INDIA_VEHICLE_API_URL;
-
-  if (!vehicleApiUrl) {
-    return res.status(200).json({
-      mode: 'mock',
-      data: {
-        registrationNumber,
-        ownerName: 'Demo Owner',
-        makerModel: 'Hyundai i20',
-        fuelType: 'Petrol',
-        registrationStatus: 'Active',
-        insuranceValidTill: '2026-11-30',
-        source: 'Mock fallback (configure INDIA_VEHICLE_API_URL for live lookup).',
-      },
-    });
-  }
+  const provider = resolveVehicleProvider();
 
   try {
-    const method = (process.env.INDIA_VEHICLE_API_METHOD || 'POST').toUpperCase();
-    const requestUrl =
-      method === 'GET'
-        ? `${vehicleApiUrl}${vehicleApiUrl.includes('?') ? '&' : '?'}registrationNumber=${encodeURIComponent(registrationNumber)}`
-        : vehicleApiUrl;
+    if (provider === 'apyflux') {
+      const result = await callApyfluxLookup(registrationNumber);
 
-    const response = await fetch(requestUrl, {
-      method,
-      headers: getHeaders(),
-      body: method === 'GET' ? undefined : JSON.stringify({ registrationNumber }),
-    });
+      if (!result.ok) {
+        return res.status(result.status).json({
+          error: 'Apyflux vehicle lookup failed',
+          status: result.status,
+          payload: result.payload,
+        });
+      }
 
-    const rawText = await response.text();
-    const payload = safeJsonParse<unknown>(rawText) ?? rawText;
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: 'Vehicle API request failed',
-        status: response.status,
-        payload,
+      return res.json({
+        mode: 'live',
+        provider,
+        data: normalizeVehicleData(result.payload, registrationNumber),
+        raw: result.payload,
       });
     }
 
-    return res.json({ mode: 'live', data: payload });
+    const result = await callGenericLookup(registrationNumber);
+    if (!result) {
+      return res.status(200).json({
+        mode: 'mock',
+        provider: 'mock',
+        data: {
+          registrationNumber,
+          ownerName: 'Demo Owner',
+          makerModel: 'Hyundai i20',
+          fuelType: 'Petrol',
+          registrationStatus: 'Active',
+          insuranceValidTill: '2026-11-30',
+          source: 'Mock fallback (configure INDIA_VEHICLE_API_URL or set INDIA_VEHICLE_PROVIDER=apyflux).',
+        },
+      });
+    }
+
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: 'Vehicle API request failed',
+        status: result.status,
+        payload: result.payload,
+      });
+    }
+
+    return res.json({
+      mode: 'live',
+      provider,
+      data: normalizeVehicleData(result.payload, registrationNumber),
+      raw: result.payload,
+    });
   } catch (error) {
     return res.status(500).json({
-      error: 'Unable to connect to configured vehicle API endpoint',
+      error: 'Vehicle lookup failed',
       details: error instanceof Error ? error.message : String(error),
     });
   }
@@ -263,21 +403,18 @@ app.post('/api/inspection/analyze-photos', upload.array('photos', 12), async (re
       ? safeJsonParse<string[]>(req.body.labels) ?? []
       : [];
 
-  const content: Array<
-    | { type: 'text'; text: string }
-    | { type: 'image_url'; image_url: { url: string } }
-  > = [
+  const userContent: any[] = [
     {
       type: 'text',
-      text: 'Analyze these used-car inspection photos for accident/repair indicators: panel gap mismatch, repaint mismatch, weld inconsistency, rust, fluid leaks, structural deformation, and tyre wear anomalies.',
+      text: 'Analyze these used-car inspection photos for accident or repair indicators: panel gap mismatch, repaint mismatch, weld inconsistency, rust, fluid leaks, structural deformation, and tyre wear anomalies.',
     },
   ];
 
   files.forEach((file, index) => {
     const base64 = file.buffer.toString('base64');
     const label = labels[index] || `photo_${index + 1}`;
-    content.push({ type: 'text', text: `Image label: ${label}` });
-    content.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
+    userContent.push({ type: 'text', text: `Image label: ${label}` });
+    userContent.push({ type: 'image_url', image_url: { url: `data:${file.mimetype};base64,${base64}` } });
   });
 
   try {
@@ -287,11 +424,11 @@ app.post('/api/inspection/analyze-photos', upload.array('photos', 12), async (re
         {
           role: 'system',
           content:
-            'You are an automotive visual inspection assistant. Evaluate photos conservatively. Return strict JSON only as instructed.',
+            'You are an automotive visual inspection assistant. Evaluate evidence conservatively. Return strict JSON only as per schema.',
         },
         {
           role: 'user',
-          content: content as never,
+          content: userContent,
         },
       ],
       response_format: {
@@ -327,10 +464,12 @@ app.post('/api/inspection/analyze-audio', upload.single('audio'), async (req, re
   }
 
   try {
+    const uploadFile = await toFile(file.buffer, file.originalname || 'engine-audio.wav', {
+      type: file.mimetype || 'audio/wav',
+    });
+
     const transcript = await openai.audio.transcriptions.create({
-      file: new File([new Uint8Array(file.buffer)], file.originalname || 'engine-audio.wav', {
-        type: file.mimetype || 'audio/wav',
-      }),
+      file: uploadFile,
       model: process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe',
     });
 

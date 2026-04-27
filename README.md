@@ -22,7 +22,8 @@ This repo now contains:
 
 ### Backend (`backend`)
 - `POST /api/vehicle/lookup`
-  - Uses configured India vehicle API connector.
+  - Supports `INDIA_VEHICLE_PROVIDER=apyflux` (native `id_number` request support).
+  - Also supports generic connector mode for other providers.
   - Returns mock response if not configured.
 - `POST /api/inspection/analyze-photos`
   - Multipart images -> OpenAI multimodal analysis.
@@ -47,10 +48,26 @@ Fill `.env`:
 - Optional model overrides:
   - `OPENAI_MODEL=gpt-4.1-mini`
   - `OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe`
-- India vehicle API connector (authorized govt/API partner endpoint):
-  - `INDIA_VEHICLE_API_URL=...`
-  - `INDIA_VEHICLE_API_METHOD=POST` (or `GET`)
-  - auth/key headers + values as needed
+- Vehicle provider:
+  - `INDIA_VEHICLE_PROVIDER=apyflux` (recommended if you use Apyflux RC Full)
+  - or `INDIA_VEHICLE_PROVIDER=generic`
+
+For Apyflux:
+- `APYFLUX_URL=https://gateway.apyflux.com/rc-full`
+- `APYFLUX_APP_ID=...`
+- `APYFLUX_CLIENT_ID=...`
+- `APYFLUX_API_KEY=...`
+
+For generic connector mode:
+- `INDIA_VEHICLE_API_URL=...`
+- `INDIA_VEHICLE_API_METHOD=POST` (or `GET`)
+- `INDIA_VEHICLE_API_BODY_FIELD=registrationNumber` (set to `id_number` if needed)
+- Optional custom headers:
+  - `INDIA_VEHICLE_API_AUTH_HEADER=...`
+  - `INDIA_VEHICLE_API_AUTH_TOKEN=...`
+  - `INDIA_VEHICLE_API_KEY_HEADER=...`
+  - `INDIA_VEHICLE_API_KEY=...`
+  - `INDIA_VEHICLE_API_HEADERS_JSON={\"x-header\":\"value\"}`
 
 Run backend:
 

@@ -155,7 +155,12 @@ export default function App() {
 
     try {
       const response = await lookupVehicle(reg);
-      setVehicleData(response.data);
+      setVehicleData({
+        ...response.data,
+        _provider: response.provider,
+        _mode: response.mode,
+        _raw: response.raw ?? null,
+      });
     } catch (error) {
       setVehicleError(error instanceof Error ? error.message : 'Vehicle lookup failed');
     } finally {

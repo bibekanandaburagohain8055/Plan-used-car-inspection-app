@@ -1,8 +1,10 @@
 import { API_BASE_URL } from '../constants/config';
 
 export interface VehicleLookupResponse {
+  provider: string;
   mode: 'mock' | 'live';
   data: Record<string, unknown>;
+  raw?: unknown;
 }
 
 export interface PhotoAssetInput {
