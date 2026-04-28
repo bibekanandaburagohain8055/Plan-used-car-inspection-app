@@ -14,7 +14,7 @@ export function AudioAnalysisCard({ data, transcript }: Props) {
     <View style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.title}>AI Audio Analysis</Text>
-        <SeverityBadge level={data.risk_level} label={`${data.risk_level} RISK`} />
+        <SeverityBadge level={data.risk_level} label={`${data.risk_level.toUpperCase()} RISK`} />
       </View>
 
       <Text style={styles.summary}>{data.summary}</Text>
@@ -26,21 +26,37 @@ export function AudioAnalysisCard({ data, transcript }: Props) {
         </View>
       ) : null}
 
-      {data.likely_causes.length > 0 ? (
+      {data.detected_sounds?.length > 0 ? (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Likely Causes</Text>
-          {data.likely_causes.map((cause, i) => (
+          <Text style={styles.sectionLabel}>Detected Sounds</Text>
+          {data.detected_sounds.map((sound, i) => (
+            <Text key={i} style={styles.bullet}>• {sound}</Text>
+          ))}
+        </View>
+      ) : null}
+
+      {data.possible_causes?.length > 0 ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Possible Causes</Text>
+          {data.possible_causes.map((cause, i) => (
             <Text key={i} style={styles.bullet}>• {cause}</Text>
           ))}
         </View>
       ) : null}
 
-      {data.next_checks.length > 0 ? (
+      {data.recommended_checks?.length > 0 ? (
         <View style={styles.section}>
-          <Text style={styles.sectionLabel}>Next Checks</Text>
-          {data.next_checks.map((check, i) => (
+          <Text style={styles.sectionLabel}>Recommended Checks</Text>
+          {data.recommended_checks.map((check, i) => (
             <Text key={i} style={styles.bullet}>• {check}</Text>
           ))}
+        </View>
+      ) : null}
+
+      {data.negotiation_impact ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Negotiation Impact</Text>
+          <Text style={styles.negotiation}>{data.negotiation_impact}</Text>
         </View>
       ) : null}
     </View>
@@ -93,5 +109,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
     color: colors.textValue,
+  },
+  negotiation: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textValue,
+    fontWeight: '600',
   },
 });
