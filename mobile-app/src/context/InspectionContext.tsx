@@ -250,6 +250,7 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
       mediaTypes: ['images'],
       quality: 0.7,
       allowsEditing: false,
+      base64: true,
     });
     if (result.canceled || !result.assets[0]?.uri) return;
     const asset = result.assets[0];
@@ -258,6 +259,7 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
       ...prev,
       [checkpointId]: {
         uri: asset.uri,
+        base64: asset.base64 ?? '',
         name: asset.fileName || `${checkpointId}-${Date.now()}.jpg`,
         type: asset.mimeType || 'image/jpeg',
         label: checkpoint?.label || checkpointId,
@@ -268,7 +270,7 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
   const doAnalyzePhotos = useCallback(async () => {
     const inputs: PhotoAssetInput[] = Object.values(photos)
       .filter((p): p is CapturedPhoto => Boolean(p))
-      .map((p) => ({ uri: p.uri, name: p.name, type: p.type, label: p.label }));
+      .map((p) => ({ uri: p.uri, base64: p.base64, name: p.name, type: p.type, label: p.label }));
 
     if (!inputs.length) {
       Alert.alert('No photos', 'Capture at least one photo before AI validation.');
@@ -342,9 +344,9 @@ export function InspectionProvider({ children }: { children: React.ReactNode }) 
     setAudioAnalyzeLoading(true);
     setAudioError(null);
     try {
-      const result = await analyzeAudioAPI(audioClip);
-      setAudioTranscript(result.transcript || '');
-      setAudioAnalysis(result.analysis);
+      const { transcript, ...analysis } = await analyzeAudioAPI(audioClip);
+      setAudioTranscript(transcript || '');
+      setAudioAnalysis(analysis);
     } catch (err) {
       setAudioError(err instanceof Error ? err.message : 'Audio analysis failed');
     } finally {

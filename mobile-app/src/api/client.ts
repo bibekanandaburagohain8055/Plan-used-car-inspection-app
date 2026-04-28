@@ -1,5 +1,7 @@
+import * as FileSystem from 'expo-file-system';
+
 import { API_BASE_URL } from '../constants/config';
-import {
+import type {
   AudioAnalysisResult,
   FinalReport,
   PhotoAnalysisResult,
@@ -10,11 +12,12 @@ export interface VehicleLookupResponse {
   provider: string;
   mode: 'mock' | 'live';
   data: Record<string, unknown>;
-  raw?: unknown;
+  warning?: string;
 }
 
 export interface PhotoAssetInput {
   uri: string;
+  base64: string;
   name: string;
   type: string;
   label: string;
@@ -54,32 +57,44 @@ export const lookupVehicle = async (registrationNumber: string): Promise<Vehicle
 export const analyzePhotos = async (
   photos: PhotoAssetInput[]
 ): Promise<{ analysis: PhotoAnalysisResult | null }> => {
-  const formData = new FormData();
-  formData.append('labels', JSON.stringify(photos.map((p) => p.label)));
-  photos.forEach((photo) => {
-    formData.append('photos', { uri: photo.uri, name: photo.name, type: photo.type } as never);
-  });
+  const photosPayload = photos.map((p) => ({
+    base64: p.base64,
+    name: p.name,
+    type: p.type,
+    label: p.label,
+  }));
 
   const response = await fetch(`${API_BASE_URL}/api/inspection/analyze-photos`, {
     method: 'POST',
-    body: formData,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ photos: photosPayload }),
   });
   return parseJsonResponse<{ analysis: PhotoAnalysisResult | null }>(response);
 };
+
+// The Python backend returns a flat object: transcript + AudioAnalysisResult fields merged.
+export type AudioAnalysisResponse = { transcript: string } & AudioAnalysisResult;
 
 export const analyzeAudio = async (audio: {
   uri: string;
   name: string;
   type: string;
-}): Promise<{ transcript: string; analysis: AudioAnalysisResult | null }> => {
-  const formData = new FormData();
-  formData.append('audio', { uri: audio.uri, name: audio.name, type: audio.type } as never);
+}): Promise<AudioAnalysisResponse> => {
+  // Read audio file as base64 using expo-file-system
+  const base64 = await FileSystem.readAsStringAsync(audio.uri, {
+    encoding: FileSystem.EncodingType.Base64,
+  });
 
   const response = await fetch(`${API_BASE_URL}/api/inspection/analyze-audio`, {
     method: 'POST',
-    body: formData,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      audioBase64: base64,
+      filename: audio.name,
+      mimetype: audio.type,
+    }),
   });
-  return parseJsonResponse<{ transcript: string; analysis: AudioAnalysisResult | null }>(response);
+  return parseJsonResponse(response);
 };
 
 export const generateFinalReport = async (payload: {
@@ -111,9 +126,18 @@ export const normalizeVehicleData = (
   ownerName: String(data.ownerName ?? ''),
   makerModel: String(data.makerModel ?? ''),
   fuelType: String(data.fuelType ?? ''),
-  registrationStatus: String(data.registrationStatus ?? ''),
-  insuranceValidTill: String(data.insuranceValidTill ?? ''),
-  registeredAt: String(data.registeredAt ?? ''),
+  vehicleClass: String(data.vehicleClass ?? ''),
+  chassisNumber: String(data.chassisNumber ?? ''),
+  engineNumber: String(data.engineNumber ?? ''),
+  registrationDate: String(data.registrationDate ?? ''),
+  fitnessUpto: String(data.fitnessUpto ?? ''),
+  insuranceExpiry: String(data.insuranceExpiry ?? ''),
+  colour: String(data.colour ?? ''),
+  state: String(data.state ?? ''),
+  yearOfManufacture: String(data.yearOfManufacture ?? ''),
+  blacklistStatus: String(data.blacklistStatus ?? ''),
+  financeBank: String(data.financeBank ?? ''),
+  noc: String(data.noc ?? ''),
   _provider: provider,
   _mode: mode,
 });

@@ -13,26 +13,31 @@ export function PhotoAnalysisCard({ data }: Props) {
     <View style={styles.card}>
       <View style={styles.header}>
         <Text style={styles.title}>AI Photo Analysis</Text>
-        <SeverityBadge level={data.risk_level} label={`${data.risk_level} RISK`} />
+        <SeverityBadge level={data.risk_level} label={`${data.risk_level.toUpperCase()} RISK`} />
       </View>
 
       <Text style={styles.summary}>{data.summary}</Text>
 
-      {data.findings.length > 0 ? (
+      {data.red_flags?.length > 0 ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Red Flags</Text>
+          {data.red_flags.map((flag, i) => (
+            <View key={i} style={styles.redFlag}>
+              <Text style={styles.redFlagText}>⚠ {flag}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      {data.findings?.length > 0 ? (
         <View style={styles.findings}>
           {data.findings.map((finding, i) => (
             <View key={i} style={styles.finding}>
               <View style={styles.findingHeader}>
-                <Text style={styles.findingLabel}>{finding.label}</Text>
+                <Text style={styles.findingLabel}>{finding.area}</Text>
                 <SeverityBadge level={finding.severity} />
               </View>
-              <Text style={styles.findingIssue}>{finding.issue}</Text>
-              {finding.evidence ? (
-                <Text style={styles.findingDetail}>
-                  <Text style={styles.detailKey}>Evidence: </Text>
-                  {finding.evidence}
-                </Text>
-              ) : null}
+              <Text style={styles.findingIssue}>{finding.description}</Text>
               {finding.recommendation ? (
                 <Text style={styles.findingDetail}>
                   <Text style={styles.detailKey}>Action: </Text>
@@ -45,6 +50,15 @@ export function PhotoAnalysisCard({ data }: Props) {
       ) : (
         <Text style={styles.empty}>No specific findings flagged.</Text>
       )}
+
+      {data.positive_points?.length > 0 ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionLabel}>Positives</Text>
+          {data.positive_points.map((point, i) => (
+            <Text key={i} style={styles.positive}>✓ {point}</Text>
+          ))}
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -74,6 +88,30 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: colors.textBody,
+  },
+  section: {
+    gap: 4,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: colors.textLabel,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  redFlag: {
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.highBorder,
+    backgroundColor: colors.highBg,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 5,
+  },
+  redFlagText: {
+    fontSize: 12,
+    color: colors.high,
+    fontWeight: '600',
+    lineHeight: 17,
   },
   findings: {
     gap: spacing.sm,
@@ -111,6 +149,11 @@ const styles = StyleSheet.create({
   detailKey: {
     fontWeight: '700',
     color: colors.textLabel,
+  },
+  positive: {
+    fontSize: 12,
+    color: colors.low,
+    lineHeight: 18,
   },
   empty: {
     fontSize: 12,

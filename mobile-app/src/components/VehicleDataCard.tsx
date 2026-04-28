@@ -22,7 +22,8 @@ function Row({ label, value, highlight }: { label: string; value: string; highli
 }
 
 export function VehicleDataCard({ data }: Props) {
-  const isActive = data.registrationStatus?.toLowerCase().includes('active');
+  const hasBlacklist = Boolean(data.blacklistStatus && data.blacklistStatus.toLowerCase() !== 'not blacklisted' && data.blacklistStatus.trim() !== '');
+  const hasFinance = Boolean(data.financeBank && data.financeBank.trim() !== '');
 
   return (
     <View style={styles.card}>
@@ -41,15 +42,21 @@ export function VehicleDataCard({ data }: Props) {
       <Row label="Owner" value={data.ownerName} />
       <Row label="Model" value={data.makerModel} />
       <Row label="Fuel" value={data.fuelType} />
-      <Row
-        label="Status"
-        value={data.registrationStatus || '—'}
-        highlight={isActive ? 'good' : data.registrationStatus ? 'bad' : undefined}
-      />
-      {data.insuranceValidTill ? (
-        <Row label="Insurance till" value={data.insuranceValidTill} />
+      {data.yearOfManufacture ? <Row label="Year" value={data.yearOfManufacture} /> : null}
+      {data.colour ? <Row label="Colour" value={data.colour} /> : null}
+      {data.state ? <Row label="State" value={data.state} /> : null}
+      {data.registrationDate ? <Row label="Reg. Date" value={data.registrationDate} /> : null}
+      {data.fitnessUpto ? <Row label="Fitness Upto" value={data.fitnessUpto} /> : null}
+      {data.insuranceExpiry ? <Row label="Insurance Expiry" value={data.insuranceExpiry} /> : null}
+      {data.blacklistStatus !== undefined && data.blacklistStatus !== null ? (
+        <Row
+          label="Blacklist"
+          value={data.blacklistStatus || 'Not Blacklisted'}
+          highlight={hasBlacklist ? 'bad' : 'good'}
+        />
       ) : null}
-      {data.registeredAt ? <Row label="Registered at" value={data.registeredAt} /> : null}
+      {hasFinance ? <Row label="Finance / Hypothecation" value={data.financeBank} highlight="bad" /> : null}
+      {data.noc ? <Row label="NOC" value={data.noc} /> : null}
     </View>
   );
 }
